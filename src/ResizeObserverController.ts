@@ -1,4 +1,6 @@
-import { scheduler } from './utils/scheduler';
+import schedulers from './utils/schedulers';
+import ObserverWindowMap from './utils/observer-window-map';
+import getWindowOf from './utils/get-window-of';
 
 import { ResizeObserver } from './ResizeObserver';
 import { ResizeObservation } from './ResizeObservation';
@@ -13,14 +15,9 @@ import { broadcastActiveObservations } from './algorithms/broadcastActiveObserva
 import { gatherActiveObservationsAtDepth } from './algorithms/gatherActiveObservationsAtDepth';
 
 const resizeObservers: ResizeObserverDetail[] = [];
-const observerMap = new Map();
-let watching = 0;
+const observerMap = new Map<ResizeObserver, ResizeObserverDetail>();
+const observerWindowMap = new ObserverWindowMap();
 
-const updateCount = (n: number): void => {
-  !watching && n > 0 && scheduler.start();
-  watching += n;
-  !watching && scheduler.stop();
-}
 
 // Helper to find the correct ResizeObservation, based on a target.
 const getObservationIndex = (observationTargets: ResizeObservation[], target: Element): number => {
@@ -59,14 +56,26 @@ class ResizeObserverController {
     resizeObservers.push(detail);
     observerMap.set(resizeObserver, detail);
   }
+
   // Informs the controller to watch a new target.
   public static observe (resizeObserver: ResizeObserver, target: Element, options?: ResizeObserverOptions): void {
     if (observerMap.has(resizeObserver)) {
       const detail = observerMap.get(resizeObserver) as ResizeObserverDetail;
+
       if (getObservationIndex(detail.observationTargets, target) < 0) {
+        const targetWindow = getWindowOf(target);
+        const scheduler = schedulers.get(targetWindow)
+
         detail.observationTargets.push(new ResizeObservation(target, options && options.box));
-        updateCount(1);
-        scheduler.schedule(); // Schedule next observation
+        observerWindowMap.add(targetWindow, resizeObserver);
+
+        // Start the scheduler
+        if (scheduler.stopped) {
+          scheduler.start();
+        }
+
+        // Schedule next observation
+        scheduler.schedule();
       }
     }
   }
@@ -75,19 +84,21 @@ class ResizeObserverController {
     if (observerMap.has(resizeObserver)) {
       const detail = observerMap.get(resizeObserver) as ResizeObserverDetail;
       const index = getObservationIndex(detail.observationTargets, target);
+
       if (index >= 0) {
         detail.observationTargets.splice(index, 1);
-        updateCount(-1);
+        observerWindowMap.remove(resizeObserver);
       }
     }
   }
+
   // Informs the controller to disconnect an observer.
   public static disconnect (resizeObserver: ResizeObserver): void {
     if (observerMap.has(resizeObserver)) {
       const detail = observerMap.get(resizeObserver) as ResizeObserverDetail;
       resizeObservers.splice(resizeObservers.indexOf(detail), 1);
       observerMap.delete(resizeObserver);
-      updateCount(-detail.observationTargets.length);
+      observerWindowMap.remove(resizeObserver);
     }
   }
 }
